@@ -1,0 +1,112 @@
+This documentation summarizes the transformation of an **Asus EeePC X101H** (Intel Atom N455) into a headless home server using **Alpine Linux**, optimized for low-resource static hosting and Git management.
+
+---
+
+## 🏗️ Core Infrastructure
+
+* **Host:** Alpine Linux (Virtual/Standard) using OpenRC.
+* **Web Server:** Nginx (configured for static content).
+* **Git:** Bare repositories with `stagit` for the web frontend.
+* **User Management:** A `git` user manages both the repositories and the web directory.
+
+---
+
+## 📁 Web & Git Structure
+
+| Path | Purpose |
+| --- | --- |
+| `/home/git/repos/` | Stores bare Git repositories (e.g., `blog.git`). |
+| `/var/www/blog/` | Web root for the static blog (accessed via `/blog`). |
+| `/var/www/git/` | Web root for the `stagit` generated frontend (accessed via `/git`). |
+
+### Permissions Setup
+
+```bash
+# Set ownership to the git user and nginx group
+chown -R git:nginx /var/www/blog /var/www/git
+chmod -R 775 /var/www/blog /var/www/git
+addgroup git nginx
+
+```
+
+---
+
+## ⚙️ Service Configuration
+
+### Nginx (`/etc/nginx/http.d/default.conf`)
+
+The configuration uses `alias` to serve two distinct sites from one IP.
+
+```nginx
+server {
+    listen 80;
+    root /var/www;
+    index index.html;
+
+    location /blog/ {
+        alias /var/www/blog/;
+    }
+
+    location /git/ {
+        alias /var/www/git/;
+    }
+}
+
+```
+
+### Automation Hook (`~/repos/blog.git/hooks/post-receive`)
+
+This script triggers on `git push`. it deploys the blog, fixes root-relative links for the subdirectory, and updates the Git UI.
+
+```bash
+#!/bin/sh
+# Variables
+TARGET="/var/www/blog"
+GIT_UI="/var/www/git"
+REPO="/home/git/repos/blog.git"
+TMP="/tmp/deploy"
+
+# 1. Deploy & Path Correction
+mkdir -p $TMP
+git --work-tree=$TMP --git-dir=$REPO checkout -f
+# Fixes root-relative links (e.g., href="/styles.css" -> href="/blog/styles.css")
+find $TMP/public -type f -name "*.html" -exec sed -i 's|href="/\([^/]\)|href="/blog/\1|g' {} +
+find $TMP/public -type f -name "*.html" -exec sed -i 's|src="/\([^/]\)|src="/blog/\1|g' {} +
+cp -r $TMP/public/* $TARGET/
+
+# 2. Git Frontend (Stagit)
+mkdir -p $GIT_UI/blog && cd $GIT_UI/blog
+stagit $REPO
+cp $TARGET/styles.css $GIT_UI/style.css  # Shared theme
+stagit-index /home/git/repos/*.git > $GIT_UI/index.html
+
+rm -rf $TMP
+
+```
+
+---
+
+## 📉 Hardware Simulation (Testing on Workstation)
+
+To replicate the constraints of the Atom N455 on high-end hardware, use `libvirt` throttling:
+
+* **CPU:** Limit to ~8.5% quota (Single-core).
+* **Disk:** Limit to 60MB/s and 150 IOPS.
+* **Network:** Limit to 12500 KiB/s (100Mbps).
+
+```bash
+# Live apply CPU cap via virsh
+virsh schedinfo <vm_name> --set vcpu_period=100000 --set vcpu_quota=8500 --current
+
+```
+
+---
+
+## 🚀 Deployment Checklist for Laptop
+
+1. **Install Alpine:** Use an external keyboard for initial `setup-alpine`.
+2. **Network:** Configure static IP or DHCP reservation.
+3. **Packages:** `apk add nginx git stagit`.
+4. **SSH:** Add your public key to `/home/git/.ssh/authorized_keys`.
+5. **Hooks:** Copy the `post-receive` script and ensure it is executable (`chmod +x`).
+
